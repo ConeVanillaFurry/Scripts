@@ -13819,8 +13819,9 @@ task.spawn(function()
 		local p = game:HttpGet("https://pastebin.com/raw/Adi9jpia")
 		local paste = p
 		while task.wait(3) do
-			if game:HttpGet("https://pastebin.com/raw/Adi9jpia") ~= paste then
-				paste = game:HttpGet("https://pastebin.com/raw/Adi9jpia")
+			local got = game:HttpGet("https://pastebin.com/raw/Adi9jpia")
+			if got ~= paste then
+				paste = got
 				notify("Global Announcement",paste)
 			end
 		end
