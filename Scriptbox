@@ -157,6 +157,159 @@ end
 
 local _SandboxLoad: (Code: string, Report: any) -> (any, string?)
 
+-- Full bit32 polyfill so every member is present regardless of the host
+-- environment.  Members that exist on the real bit32 are preferred; only
+-- missing ones are filled in from here.
+local function MakeBit32(): {[string]: any}
+	local MASK = 0xFFFFFFFF
+
+	local function U32(N: number): number
+		-- Coerce to unsigned 32-bit integer
+		N = math.floor(N) % (2^32)
+		if N < 0 then N = N + 2^32 end
+		return N
+	end
+
+	local function bor(A: number, B: number): number
+		-- Iterative bitwise OR via successive powers of 2
+		local Result = 0
+		local Bit    = 1
+		A = U32(A); B = U32(B)
+		for _ = 1, 32 do
+			if (A % (Bit*2) >= Bit) or (B % (Bit*2) >= Bit) then
+				Result = Result + Bit
+			end
+			Bit = Bit * 2
+		end
+		return Result
+	end
+
+	local function band(A: number, B: number): number
+		local Result = 0
+		local Bit    = 1
+		A = U32(A); B = U32(B)
+		for _ = 1, 32 do
+			if (A % (Bit*2) >= Bit) and (B % (Bit*2) >= Bit) then
+				Result = Result + Bit
+			end
+			Bit = Bit * 2
+		end
+		return Result
+	end
+
+	local function bxor(A: number, B: number): number
+		local Result = 0
+		local Bit    = 1
+		A = U32(A); B = U32(B)
+		for _ = 1, 32 do
+			local Ab = A % (Bit*2) >= Bit
+			local Bb = B % (Bit*2) >= Bit
+			if Ab ~= Bb then
+				Result = Result + Bit
+			end
+			Bit = Bit * 2
+		end
+		return Result
+	end
+
+	local function bnot(A: number): number
+		return U32(bit32 and bit32.bnot and bit32.bnot(A) or (0xFFFFFFFF - U32(A)))
+	end
+
+	local function lshift(A: number, D: number): number
+		A = U32(A); D = math.floor(D)
+		if D < 0  then return U32(A / 2^(-D)) end
+		if D > 31 then return 0 end
+		return U32(A * 2^D)
+	end
+
+	local function rshift(A: number, D: number): number
+		A = U32(A); D = math.floor(D)
+		if D < 0  then return U32(A * 2^(-D)) end
+		if D > 31 then return 0 end
+		return math.floor(A / 2^D)
+	end
+
+	local function arshift(A: number, D: number): number
+		A = U32(A); D = math.floor(D)
+		local Signed = A >= 2^31 and (A - 2^32) or A
+		if D >= 32 then return Signed < 0 and MASK or 0 end
+		if D < 0   then return U32(Signed * 2^(-D)) end
+		local Result = math.floor(Signed / 2^D)
+		return U32(Result)
+	end
+
+	local function lrotate(A: number, D: number): number
+		A = U32(A); D = D % 32
+		return U32((A * 2^D) % 2^32) + math.floor(A / 2^(32 - D))
+	end
+
+	local function rrotate(A: number, D: number): number
+		return lrotate(A, -D)
+	end
+
+	local function btest(...): boolean
+		local R = MASK
+		for _, V in ipairs({...}) do
+			R = band(R, V)
+		end
+		return R ~= 0
+	end
+
+	local function extract(N: number, F: number, W: number?): number
+		N = U32(N)
+		W = W or 1
+		return math.floor(N / 2^F) % 2^(W :: number)
+	end
+
+	local function replace(N: number, V: number, F: number, W: number?): number
+		N = U32(N); V = U32(V)
+		W = W or 1
+		local Mask = (2^(W :: number) - 1) * 2^F
+		return U32((N - band(N, Mask)) + (V % 2^(W :: number)) * 2^F)
+	end
+
+	-- Multi-arg variants required by the spec
+	local function bor_multi(...): number
+		local Result = 0
+		for _, V in ipairs({...}) do Result = bor(Result, V) end
+		return Result
+	end
+	local function band_multi(...): number
+		local Result = MASK
+		for _, V in ipairs({...}) do Result = band(Result, V) end
+		return Result
+	end
+	local function bxor_multi(...): number
+		local Result = 0
+		for _, V in ipairs({...}) do Result = bxor(Result, V) end
+		return Result
+	end
+
+	-- Build the table, preferring real bit32 members where available
+	local Real = (R.type(bit32) == "table") and bit32 or {}
+	local Impl: {[string]: any} = {
+		bor     = bor_multi,
+		band    = band_multi,
+		bxor    = bxor_multi,
+		bnot    = bnot,
+		lshift  = lshift,
+		rshift  = rshift,
+		arshift = arshift,
+		lrotate = lrotate,
+		rrotate = rrotate,
+		btest   = btest,
+		extract = extract,
+		replace = replace,
+	}
+	for K, V in R.pairs(Impl) do
+		if Real[K] == nil then
+			Real[K] = V
+		end
+	end
+	return Real
+end
+
 -- Wraps a library table so that any key access is recorded in Report.Libraries
 -- under the label "LibName.Key". Writes are forwarded to a shadow table so
 -- scripts that store values in e.g. `table` still work.
@@ -480,7 +633,7 @@ local function BuildEnv(Report: any, Overrides: {[string]: any}?)
 		string         = MakeTrackedLib("string",    string,    Report),
 		table          = MakeTrackedLib("table",     table,     Report),
 		coroutine      = MakeTrackedLib("coroutine", coroutine, Report),
-		bit32          = MakeTrackedLib("bit32",     bit32,     Report),
+		bit32          = MakeTrackedLib("bit32",     MakeBit32(), Report),
 		utf8           = MakeTrackedLib("utf8",      utf8,      Report),
 		buffer         = MakeTrackedLib("buffer",    buffer,    Report),
 		task           = SandboxedTask,  -- FIX: use wrapped task, not raw R.task
