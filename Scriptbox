@@ -1,31 +1,5 @@
---!strict
--- ============================================================
---  Sandbox Analysis Module
---  Executes potentially malicious scripts in a fully isolated
---  environment, intercepts all external interactions, and returns
---  a structured analysis report.
---
---  Design principles:
---   • Real function vault cached at module load time (before any
---     sandboxed code can hook globals)
---   • All game objects are proxy tables with locked metatables
---   • type()/typeof() overridden to respect __type spoofing
---   • debug.* returns plausible but fake data
---   • getfenv/getgenv return a proxy into hidden storage
---   • Global assignments ("a = 0") land in hidden storage,
---     invisible to rawget/pairs on the env table
---   • HTTP responses are scrubbed of real IPs; IP-grabbing
---     endpoints are detected and fed a fake IP
---   • workspace.Parent bypass is patched to return fakeGame
---   • Any loadstring() inside the script is recursively sandboxed
--- ============================================================
-
 local Sandbox = {}
 
--- ============================================================
--- §1  REAL FUNCTION VAULT
---     Cache originals before sandboxed code can tamper with them.
--- ============================================================
 local R = {
 	type         = type,
 	typeof       = typeof,
@@ -73,297 +47,258 @@ local R = {
 	os   = { clock = os.clock },
 }
 
--- ============================================================
--- §2  UTILITIES
--- ============================================================
-
---- Returns a 32-character hex string (GUID without braces/dashes).
-local function newGUID(): string
-	local hex = "0123456789abcdef"
-	local t   = {}
-	for i = 1, 32 do
-		local r = R.math.random(1, 16)
-		t[i] = R.string.sub(hex, r, r)
+local function NewGUID(): string
+	local Hex = "0123456789abcdef"
+	local T   = {}
+	for I = 1, 32 do
+		local Idx = R.math.random(1, 16)
+		T[I] = R.string.sub(Hex, Idx, Idx)
 	end
-	return R.table.concat(t)
+	return R.table.concat(T)
 end
 
---- Returns a plausible-looking private-range IP.
-local function fakeIP(): string
+local function FakeIP(): string
 	return R.string.format("10.%d.%d.%d",
 		R.math.random(0, 254),
 		R.math.random(1, 254),
 		R.math.random(1, 254))
 end
 
---- Replaces every IPv4 address in a string with a fake one.
-local function scrubIPs(text: any): any
-	if R.type(text) ~= "string" then return text end
-	return (R.string.gsub(text, "%d+%.%d+%.%d+%.%d+",
-		function() return fakeIP() end))
+local function ScrubIPs(Text: any): any
+	if R.type(Text) ~= "string" then return Text end
+	return (R.string.gsub(Text, "%d+%.%d+%.%d+%.%d+",
+		function() return FakeIP() end))
 end
 
-local IP_GRAB_PATTERNS = {
+local IpGrabPatterns = {
 	"icanhazip", "ipinfo", "ipify", "checkip", "whatismyip",
 	"ipecho",    "myexternalip", "ipapi", "ip%-api",
 	"ifconfig%.me", "ident%.me", "wtfismyip", "ip%.me",
 }
 
-local function isIPGrabber(url: string): boolean
-	local lower = R.string.lower(url)
-	for _, pat in R.ipairs(IP_GRAB_PATTERNS) do
-		if R.string.find(lower, pat) then return true end
+local function IsIPGrabber(Url: string): boolean
+	local Lower = R.string.lower(Url)
+	for _, Pat in R.ipairs(IpGrabPatterns) do
+		if R.string.find(Lower, Pat) then return true end
 	end
 	return false
 end
 
-local function addUnique(t: {any}, v: any)
-	for _, e in R.ipairs(t) do
-		if e == v then return end
+local function AddUnique(T: {any}, V: any)
+	for _, E in R.ipairs(T) do
+		if E == V then return end
 	end
-	R.table.insert(t, v)
+	R.table.insert(T, V)
 end
 
--- ============================================================
--- §3  FAKE INSTANCE FACTORY
---     Creates tables that look and behave like Roblox Instances.
---     Key hardening points:
---       __type      → spoofs typeof() to return the real class name
---       __metatable → getmetatable() returns a string, not the table
--- ============================================================
-local function makeFakeInstance(className: string, props: {[string]: any}?)
-	local inst    = {}
-	local store   = props and R.table.clone(props) or {} :: {[string]: any}
-	local children: {[string]: any} = {}
-	local mt = {}
+local function MakeFakeInstance(ClassName: string, Props: {[string]: any}?)
+	local Inst     = {}
+	local Store    = Props and R.table.clone(Props) or {} :: {[string]: any}
+	local Children: {[string]: any} = {}
+	local Mt = {}
 
-	mt.__type      = className
-	mt.__metatable = "The metatable is locked"
+	Mt.__type      = ClassName
+	Mt.__metatable = "The metatable is locked"
 
-	mt.__index = function(_, k)
-		if k == "ClassName"  then return className end
-		if k == "Name"       then return store.Name or className end
-		if k == "Parent"     then return store.Parent end
-		if k == "Archivable" then return true end
-		if k == "IsA"        then return function(_, cls)
-			return cls == className or cls == "Instance"
+	Mt.__index = function(_, K)
+		if K == "ClassName"  then return ClassName end
+		if K == "Name"       then return Store.Name or ClassName end
+		if K == "Parent"     then return Store.Parent end
+		if K == "Archivable" then return true end
+		if K == "IsA" then return function(_, Cls)
+			return Cls == ClassName or Cls == "Instance"
 		end end
-		if k == "FindFirstChild" then return function(_, n)
-			return children[n]
+		if K == "FindFirstChild" then return function(_, N)
+			return Children[N]
 		end end
-		if k == "FindFirstChildOfClass" then return function(_, cls)
-			for _, c in R.pairs(children) do
-				local cmt = R.getmetatable(c)
-				if cmt and R.rawget(cmt, "__type") == cls then return c end
+		if K == "FindFirstChildOfClass" then return function(_, Cls)
+			for _, C in R.pairs(Children) do
+				local Cmt = R.getmetatable(C)
+				if Cmt and R.rawget(Cmt, "__type") == Cls then return C end
 			end
 			return nil
 		end end
-		if k == "GetChildren"    then return function(_)
-			local out = {}
-			for _, c in R.pairs(children) do R.table.insert(out, c) end
-			return out
+		if K == "GetChildren" then return function(_)
+			local Out = {}
+			for _, C in R.pairs(Children) do R.table.insert(Out, C) end
+			return Out
 		end end
-		if k == "GetDescendants" then return function(_) return {} end end
-		if k == "Destroy"        then return function() end end
-		if k == "Clone"          then return function(_)
-			return makeFakeInstance(className, store)
+		if K == "GetDescendants" then return function(_) return {} end end
+		if K == "Destroy"        then return function() end end
+		if K == "Clone" then return function(_)
+			return MakeFakeInstance(ClassName, Store)
 		end end
-		if k == "WaitForChild"   then return function(_, n, _t)
-			return children[n]
+		if K == "WaitForChild" then return function(_, N, _T)
+			return Children[N]
 		end end
-		-- RBXScriptSignal stubs
-		local sigKeys = {
+		local SigKeys = {
 			AncestryChanged=1, AttributeChanged=1, Changed=1,
 			ChildAdded=1, ChildRemoved=1, DescendantAdded=1,
 		}
-		if sigKeys[k] then
-			return { Connect = function(_, _f) return {Disconnect=function()end} end }
+		if SigKeys[K] then
+			return { Connect = function(_, _F) return {Disconnect=function()end} end }
 		end
-		return store[k]
+		return Store[K]
 	end
 
-	mt.__newindex = function(_, k, v)
-		if k == "Parent" then store.Parent = v; return end
-		store[k] = v
+	Mt.__newindex = function(_, K, V)
+		if K == "Parent" then Store.Parent = V; return end
+		Store[K] = V
 	end
 
-	mt.__tostring = function() return store.Name or className end
+	Mt.__tostring = function() return Store.Name or ClassName end
 
-	R.setmetatable(inst, mt)
+	R.setmetatable(Inst, Mt)
 
-	-- Internal child-planting helper (not exposed to sandbox code)
-	local function _addChild(name, child) children[name] = child end
+	local function AddChild(Name, Child) Children[Name] = Child end
 
-	return inst, _addChild
+	return Inst, AddChild
 end
 
--- ============================================================
--- §4  SANDBOX ENVIRONMENT BUILDER
--- ============================================================
+local _SandboxLoad: (Code: string, Report: any) -> (any, string?)
 
--- Forward-declared: buildEnv and _sandboxLoad reference each other.
-local _sandboxLoad: (code: string, report: any) -> (any, string?)
+local function BuildEnv(Report: any, Overrides: {[string]: any}?)
 
-local function buildEnv(report: any, overrides: {[string]: any}?)
-
-	-- ── 4.1  Per-run fake identity ──────────────────────────────────
-	local identity = {
-		Name         = newGUID():sub(1, 20),
-		DisplayName  = newGUID():sub(1, 12),
+	local Identity = {
+		Name         = NewGUID():sub(1, 20),
+		DisplayName  = NewGUID():sub(1, 12),
 		UserId       = R.math.random(100_000_000, 999_999_999),
 		AppearanceId = R.math.random(100_000_000, 999_999_999),
 		AccountAge   = R.math.random(60, 3000),
 	}
 
-	-- ── 4.2  Hidden global storage ──────────────────────────────────
-	--  "a = 0" inside the script lands here, not inside env directly.
-	--  rawget(env, "a") returns nil; the value is invisible to probing.
-	local globalStorage: {[string]: any} = {}
+	local GlobalStorage: {[string]: any} = {}
 
-	-- ── 4.3  Fake LocalPlayer ───────────────────────────────────────
-	local fakeLocalPlayer = makeFakeInstance("Player", {
-		Name            = identity.Name,
-		DisplayName     = identity.DisplayName,
-		UserId          = identity.UserId,
-		AccountAge      = identity.AccountAge,
+	local FakeLocalPlayer = MakeFakeInstance("Player", {
+		Name            = Identity.Name,
+		DisplayName     = Identity.DisplayName,
+		UserId          = Identity.UserId,
+		AccountAge      = Identity.AccountAge,
 		MembershipType  = 0,
-		AppearanceId    = identity.AppearanceId,
+		AppearanceId    = Identity.AppearanceId,
 	})
 
-	-- ── 4.4  Fake Players service ───────────────────────────────────
-	local fakePlayers = {}
-	R.setmetatable(fakePlayers, {
+	local FakePlayers = {}
+	R.setmetatable(FakePlayers, {
 		__type      = "Players",
 		__metatable = "The metatable is locked",
-		__index = function(_, k)
-			if k == "LocalPlayer"  then return fakeLocalPlayer end
-			if k == "MaxPlayers"   then return 10 end
-			if k == "NumPlayers"   then return 1 end
-			if k == "Name"         then return "Players" end
-			if k == "ClassName"    then return "Players" end
-			if k == "GetPlayers"   then return function(_) return {fakeLocalPlayer} end end
-			if k == "PlayerAdded" or k == "PlayerRemoving" then
-				return { Connect = function(_, _f) return {Disconnect=function()end} end }
+		__index = function(_, K)
+			if K == "LocalPlayer"  then return FakeLocalPlayer end
+			if K == "MaxPlayers"   then return 10 end
+			if K == "NumPlayers"   then return 1 end
+			if K == "Name"         then return "Players" end
+			if K == "ClassName"    then return "Players" end
+			if K == "GetPlayers"   then return function(_) return {FakeLocalPlayer} end end
+			if K == "PlayerAdded" or K == "PlayerRemoving" then
+				return { Connect = function(_, _F) return {Disconnect=function()end} end }
 			end
 			return nil
 		end,
 		__newindex = function() end,
 	})
 
-	-- ── 4.5  Forward-declare game/workspace (they reference each other) ─
-	local fakeGame      = {}
-	local fakeWorkspace = {}
-	local wsStorage: {[string]: any} = {}
+	local FakeGame      = {}
+	local FakeWorkspace = {}
+	local WsStorage: {[string]: any} = {}
 
-	-- ── 4.6  HTTP interception ──────────────────────────────────────
-	local function handleHTTP(url, method, data, headers)
-		url = R.tostring(url or "")
-		local grabber = isIPGrabber(url)
-		local entry = {
-			URL         = scrubIPs(url),   -- scrub real IP even from the URL itself
-			Method      = method or "GET",
-			SentData    = data,
-			Headers     = headers,
+	local function HandleHTTP(Url, Method, Data, Headers)
+		Url = R.tostring(Url or "")
+		local Grabber = IsIPGrabber(Url)
+		local Entry = {
+			URL         = ScrubIPs(Url),
+			Method      = Method or "GET",
+			SentData    = Data,
+			Headers     = Headers,
 			StatusCode  = 200,
 			Response    = "",
-			IsIPGrabber = grabber,
+			IsIPGrabber = Grabber,
 		}
-		if grabber then
-			-- Feed the script a fake IP so exfiltration fails silently
-			entry.Response = fakeIP()
-			entry.Note     = "IP-grabbing endpoint detected"
+		if Grabber then
+			Entry.Response = FakeIP()
+			Entry.Note     = "IP-grabbing endpoint detected"
 		else
-			entry.Response = '{"status":"ok","data":null}'
+			Entry.Response = '{"status":"ok","data":null}'
 		end
-		-- Store keyed by raw (pre-scrub) URL for report readability
-		report.URLs[url] = entry
-		return entry.Response, entry.StatusCode
+		Report.URLs[Url] = Entry
+		return Entry.Response, Entry.StatusCode
 	end
 
-	local function httpGetImpl(_, url, ...)
-		local resp = handleHTTP(url, "GET")
-		return scrubIPs(R.tostring(resp))
+	local function HttpGetImpl(_, Url, ...)
+		local Resp = HandleHTTP(Url, "GET")
+		return ScrubIPs(R.tostring(Resp))
 	end
 
-	local function httpPostImpl(_, url, data, ...)
-		local resp = handleHTTP(url, "POST", data)
-		return scrubIPs(R.tostring(resp))
+	local function HttpPostImpl(_, Url, Data, ...)
+		local Resp = HandleHTTP(Url, "POST", Data)
+		return ScrubIPs(R.tostring(Resp))
 	end
 
-	local function requestImpl(opts)
-		if R.type(opts) ~= "table" then
+	local function RequestImpl(Opts)
+		if R.type(Opts) ~= "table" then
 			return {Body="",StatusCode=400,Headers={},Success=false}
 		end
-		local url     = opts.Url    or opts.url    or ""
-		local method  = opts.Method or opts.method or "GET"
-		local data    = opts.Body   or opts.body
-		local headers = opts.Headers or opts.headers
-		local resp, code = handleHTTP(url, method, data, headers)
+		local Url     = Opts.Url    or Opts.url    or ""
+		local Method  = Opts.Method or Opts.method or "GET"
+		local Data    = Opts.Body   or Opts.body
+		local Headers = Opts.Headers or Opts.headers
+		local Resp, Code = HandleHTTP(Url, Method, Data, Headers)
 		return {
-			Body       = scrubIPs(R.tostring(resp)),
-			StatusCode = code,
+			Body       = ScrubIPs(R.tostring(Resp)),
+			StatusCode = Code,
 			Headers    = {},
 			Success    = true,
 		}
 	end
 
-	-- ── 4.7  Fake game (DataModel) ──────────────────────────────────
-	R.setmetatable(fakeGame, {
+	R.setmetatable(FakeGame, {
 		__type      = "DataModel",
 		__metatable = "The metatable is locked",
 		__tostring  = function() return "Game" end,
-		__index = function(_, k)
-			if k == "Players"                    then return fakePlayers end
-			if k == "Workspace" or k == "workspace" then return fakeWorkspace end
-			if k == "HttpGet"   or k == "HttpGetAsync"  then return httpGetImpl end
-			if k == "HttpPost"  or k == "HttpPostAsync" then return httpPostImpl end
-			if k == "Name"      then return "Game" end
-			if k == "ClassName" then return "DataModel" end
-			if k == "GetService" then
-				return function(_, svcName)
-					addUnique(report.Services, svcName)
-					if svcName == "Players"   then return fakePlayers end
-					if svcName == "Workspace" then return fakeWorkspace end
-					return makeFakeInstance(svcName, {Name = svcName})
+		__index = function(_, K)
+			if K == "Players"                       then return FakePlayers end
+			if K == "Workspace" or K == "workspace" then return FakeWorkspace end
+			if K == "HttpGet"   or K == "HttpGetAsync"  then return HttpGetImpl end
+			if K == "HttpPost"  or K == "HttpPostAsync" then return HttpPostImpl end
+			if K == "Name"      then return "Game" end
+			if K == "ClassName" then return "DataModel" end
+			if K == "GetService" then
+				return function(_, SvcName)
+					AddUnique(Report.Services, SvcName)
+					if SvcName == "Players"   then return FakePlayers end
+					if SvcName == "Workspace" then return FakeWorkspace end
+					return MakeFakeInstance(SvcName, {Name = SvcName})
 				end
 			end
-			if k == "FindFirstChild" then
-				return function(_, name)
-					if name == "Workspace" or name == "workspace" then return fakeWorkspace end
-					if name == "Players" then return fakePlayers end
+			if K == "FindFirstChild" then
+				return function(_, Name)
+					if Name == "Workspace" or Name == "workspace" then return FakeWorkspace end
+					if Name == "Players" then return FakePlayers end
 					return nil
 				end
 			end
-			-- Track all other accesses so the report shows what services the script probed
-			addUnique(report.Services, k)
-			return makeFakeInstance(k, {Name = k})
+			AddUnique(Report.Services, K)
+			return MakeFakeInstance(K, {Name = K})
 		end,
 		__newindex = function() end,
 	})
 
-	-- ── 4.8  Fake workspace ─────────────────────────────────────────
-	--  BYPASS PATCH: workspace.Parent is the classic sandbox escape.
-	--  Returning fakeGame here instead of real game closes that hole.
-	R.setmetatable(fakeWorkspace, {
+	R.setmetatable(FakeWorkspace, {
 		__type      = "Workspace",
 		__metatable = "The metatable is locked",
 		__tostring  = function() return "Workspace" end,
-		__index = function(_, k)
-			if k == "Parent"        then return fakeGame end   -- ← bypass patch
-			if k == "Name"          then return "Workspace" end
-			if k == "ClassName"     then return "Workspace" end
-			if k == "CurrentCamera" then
-				return makeFakeInstance("Camera", {Name = "Camera"})
+		__index = function(_, K)
+			if K == "Parent"        then return FakeGame end
+			if K == "Name"          then return "Workspace" end
+			if K == "ClassName"     then return "Workspace" end
+			if K == "CurrentCamera" then
+				return MakeFakeInstance("Camera", {Name = "Camera"})
 			end
-			return wsStorage[k]
+			return WsStorage[K]
 		end,
-		__newindex = function(_, k, v) wsStorage[k] = v end,
+		__newindex = function(_, K, V) WsStorage[K] = V end,
 	})
 
-	-- ── 4.9  Fake debug library ─────────────────────────────────────
-	--  Returns plausible-looking empty / neutral values so scripts
-	--  that probe their own stack don't crash, but also learn nothing.
-	local fakeDebug = {
+	local FakeDebug = {
 		getstack      = function(...) return {} end,
 		getupvalues   = function(...) return {} end,
 		getupvalue    = function(...) return nil end,
@@ -390,76 +325,62 @@ local function buildEnv(report: any, overrides: {[string]: any}?)
 		profileend   = function() end,
 	}
 
-	-- ── 4.10  Sandboxed type / typeof ───────────────────────────────
-	--  Checks the __type metamethod first, so our fake Instances
-	--  appear as their real Roblox class names to sandboxed code.
-	local function sandboxType(v)
-		local mt = R.getmetatable(v)
-		if mt then
-			local t = R.rawget(mt, "__type")
-			if t then return t end
+	local function SandboxType(V)
+		local Mt = R.getmetatable(V)
+		if Mt then
+			local T = R.rawget(Mt, "__type")
+			if T then return T end
 		end
-		return R.type(v)
+		return R.type(V)
 	end
 
-	local function sandboxTypeof(v)
-		local mt = R.getmetatable(v)
-		if mt then
-			local t = R.rawget(mt, "__type")
-			if t then return t end
+	local function SandboxTypeof(V)
+		local Mt = R.getmetatable(V)
+		if Mt then
+			local T = R.rawget(Mt, "__type")
+			if T then return T end
 		end
-		if R.type(R.typeof) == "function" then return R.typeof(v) end
-		return R.type(v)
+		if R.type(R.typeof) == "function" then return R.typeof(V) end
+		return R.type(V)
 	end
 
-	-- ── 4.11  Fake environment proxy ────────────────────────────────
-	--  getfenv/getgenv return this proxy. All reads/writes go through
-	--  globalStorage, so the real safeGlobals table is never exposed.
-	local fakeEnvProxy = {}
-	R.setmetatable(fakeEnvProxy, {
-		__index     = function(_, k) return globalStorage[k] end,
-		__newindex  = function(_, k, v) globalStorage[k] = v end,
+	local FakeEnvProxy = {}
+	R.setmetatable(FakeEnvProxy, {
+		__index     = function(_, K) return GlobalStorage[K] end,
+		__newindex  = function(_, K, V) GlobalStorage[K] = V end,
 		__len       = function() return 0 end,
 		__metatable = "The metatable is locked",
 	})
 
-	-- ── 4.12  Recursive loadstring ──────────────────────────────────
-	local function sandboxedLoadstring(code, chunkname)
-		R.table.insert(report.NestedLoadstrings, {
-			Code      = R.tostring(code),
-			ChunkName = chunkname,
+	local function SandboxedLoadstring(Code, ChunkName)
+		R.table.insert(Report.NestedLoadstrings, {
+			Code      = R.tostring(Code),
+			ChunkName = ChunkName,
 		})
-		return _sandboxLoad(code, report)
+		return _SandboxLoad(Code, Report)
 	end
 
-	-- ── 4.13  Assemble the environment ──────────────────────────────
-	local env = {}
+	local Env = {}
 
-	local baseGlobals: {[string]: any} = {
-		-- ─ Types ───────────────────────────────────────────────────
-		type           = sandboxType,
-		typeof         = sandboxTypeof,
+	local BaseGlobals: {[string]: any} = {
+		type           = SandboxType,
+		typeof         = SandboxTypeof,
 		tostring       = R.tostring,
 		tonumber       = R.tonumber,
-		-- ─ Iteration ───────────────────────────────────────────────
 		ipairs         = R.ipairs,
 		pairs          = R.pairs,
 		next           = R.next,
 		select         = R.select,
-		-- ─ Raw access ──────────────────────────────────────────────
 		rawget         = R.rawget,
 		rawset         = R.rawset,
 		rawequal       = R.rawequal,
 		rawlen         = R.rawlen,
-		-- ─ Metatables ──────────────────────────────────────────────
 		setmetatable   = R.setmetatable,
 		getmetatable   = R.getmetatable,
-		-- ─ Error handling ──────────────────────────────────────────
 		pcall          = R.pcall,
 		xpcall         = R.xpcall,
 		error          = R.error,
 		assert         = R.assert,
-		-- ─ Standard libs ───────────────────────────────────────────
 		math           = math,
 		string         = string,
 		table          = table,
@@ -467,60 +388,52 @@ local function buildEnv(report: any, overrides: {[string]: any}?)
 		bit32          = bit32,
 		utf8           = utf8,
 		buffer         = buffer,
-		-- ─ Roblox task / time ──────────────────────────────────────
 		task           = task,
 		tick           = tick,
 		time           = time,
-		wait           = function(n) task.wait(n) end,
-		-- ─ Output (logged) ─────────────────────────────────────────
+		wait           = function(N) task.wait(N) end,
 		print = function(...)
-			local parts = {}
-			for i = 1, R.select("#", ...) do
-				parts[i] = R.tostring((R.select(i, ...)))
+			local Parts = {}
+			for I = 1, R.select("#", ...) do
+				Parts[I] = R.tostring((R.select(I, ...)))
 			end
-			R.table.insert(report.Prints, R.table.concat(parts, "\t"))
+			R.table.insert(Report.Prints, R.table.concat(Parts, "\t"))
 		end,
 		warn = function(...)
-			local parts = {}
-			for i = 1, R.select("#", ...) do
-				parts[i] = R.tostring((R.select(i, ...)))
+			local Parts = {}
+			for I = 1, R.select("#", ...) do
+				Parts[I] = R.tostring((R.select(I, ...)))
 			end
-			R.table.insert(report.Warnings, R.table.concat(parts, "\t"))
+			R.table.insert(Report.Warnings, R.table.concat(Parts, "\t"))
 		end,
-		-- ─ Script loading ──────────────────────────────────────────
-		loadstring = sandboxedLoadstring,
-		load       = function(chunk, name, _mode, _env)
-			return sandboxedLoadstring(chunk, name)
+		loadstring = SandboxedLoadstring,
+		load       = function(Chunk, Name, _Mode, _Env)
+			return SandboxedLoadstring(Chunk, Name)
 		end,
-		-- ─ Environment access ───────────────────────────────────────
-		getfenv  = function(_) return fakeEnvProxy end,
-		getgenv  = function()  return fakeEnvProxy end,
-		getrenv  = function()  return fakeEnvProxy end,  -- executor-specific
-		getsenv  = function(_) return fakeEnvProxy end,  -- executor-specific
-		setfenv  = function(f, _) return f end,          -- no-op; block escape
-		-- ─ Debug (faked) ────────────────────────────────────────────
-		debug = fakeDebug,
-		-- ─ Game / world ─────────────────────────────────────────────
-		game           = fakeGame,
-		Game           = fakeGame,
-		workspace      = fakeWorkspace,
-		Workspace      = fakeWorkspace,
-		script         = makeFakeInstance("LocalScript", {Name = "Script"}),
+		getfenv  = function(_) return FakeEnvProxy end,
+		getgenv  = function()  return FakeEnvProxy end,
+		getrenv  = function()  return FakeEnvProxy end,
+		getsenv  = function(_) return FakeEnvProxy end,
+		setfenv  = function(F, _) return F end,
+		debug = FakeDebug,
+		game           = FakeGame,
+		Game           = FakeGame,
+		workspace      = FakeWorkspace,
+		Workspace      = FakeWorkspace,
+		script         = MakeFakeInstance("LocalScript", {Name = "Script"}),
 		Instance       = {
-			new = function(cls, parent)
-				addUnique(report.Libraries, "Instance.new:" .. R.tostring(cls))
-				return makeFakeInstance(cls or "Instance", {Parent = parent})
+			new = function(Cls, Parent)
+				AddUnique(Report.Libraries, "Instance.new:" .. R.tostring(Cls))
+				return MakeFakeInstance(Cls or "Instance", {Parent = Parent})
 			end,
 		},
-		-- ─ HTTP / request ────────────────────────────────────────────
 		syn     = {
-			request           = requestImpl,
+			request           = RequestImpl,
 			protect_gui       = function() end,
 			queue_on_teleport = function() end,
 		},
-		request = requestImpl,
-		http    = { request = requestImpl },
-		-- ─ Executor detection → neutral/fake values ─────────────────
+		request = RequestImpl,
+		http    = { request = RequestImpl },
 		SYNAPSE_LOADED           = false,
 		KRNL_LOADED              = false,
 		SENTINEL_V2              = false,
@@ -530,111 +443,68 @@ local function buildEnv(report: any, overrides: {[string]: any}?)
 		identifyexecutor         = function() return "sandbox", "1.0" end,
 		getthreadidentity        = function() return 2 end,
 		setthreadidentity        = function() end,
-		-- ─ Executor utility stubs ─────────────────────────────────────
 		getscriptbytecode        = function() return "" end,
-		getscripthash            = function() return newGUID() end,
-		hookfunction             = function(f, _g) return f end,
-		newcclosure              = function(f) return f end,
+		getscripthash            = function() return NewGUID() end,
+		hookfunction             = function(F, _G) return F end,
+		newcclosure              = function(F) return F end,
 		isluau                   = function() return true end,
 		getconnections           = function() return {} end,
 		firesignal               = function() end,
 		decompile                = function() return "-- decompile unavailable in sandbox" end,
 		getallthreads            = function() return {} end,
 		queue_on_teleport        = function() end,
-		cloneref                 = function(inst) return inst end,
-		compareinstances         = function(a, b) return a == b end,
+		cloneref                 = function(Inst) return Inst end,
+		compareinstances         = function(A, B) return A == B end,
 	}
 
-	-- Apply any caller-supplied overrides (e.g. replaceData from the public API)
-	if overrides then
-		for k, v in R.pairs(overrides) do
-			baseGlobals[k] = v
+	if Overrides then
+		for K, V in R.pairs(Overrides) do
+			BaseGlobals[K] = V
 		end
 	end
 
-	-- The metatable on env is the core of the sandbox:
-	--   __index  → safeGlobals first, then hidden globalStorage
-	--   __newindex → all script-level assignments go to hidden storage;
-	--                never visible via rawget(env, key)
-	R.setmetatable(env, {
-		__index = function(_, k)
-			local v = R.rawget(baseGlobals, k)
-			if v ~= nil then return v end
-			return globalStorage[k]
+	R.setmetatable(Env, {
+		__index = function(_, K)
+			local V = R.rawget(BaseGlobals, K)
+			if V ~= nil then return V end
+			return GlobalStorage[K]
 		end,
-		__newindex = function(_, k, v)
-			-- Store in hidden storage so it can't be detected as fake
-			globalStorage[k] = v
-			-- Log every global write for the analysis report
-			report.GlobalAssignments[k] = v
+		__newindex = function(_, K, V)
+			GlobalStorage[K] = V
+			Report.GlobalAssignments[K] = V
 		end,
 	})
 
-	return env
+	return Env
 end
 
--- ============================================================
--- §5  LOAD CODE INTO A SANDBOXED ENVIRONMENT
---     Tries multiple strategies to support both standard Luau
---     and executor-modified environments.
--- ============================================================
+_SandboxLoad = function(Code: string, Report: any): (any, string?)
+	local Env = BuildEnv(Report, Report._Overrides)
+	local Fn, Err
 
-_sandboxLoad = function(code: string, report: any): (any, string?)
-	local env = buildEnv(report, report._overrides)
-	local fn, err
-
-	-- Strategy 1: load(chunk, name, mode, env)  ← standard Luau
 	if R.type(R.load) == "function" then
-		fn, err = R.load(code, "=[sandbox]", "t", env)
+		Fn, Err = R.load(Code, "=[sandbox]", "t", Env)
 	end
 
-	-- Strategy 2: executor-style loadstring(code, env)
-	--             (second arg is environment, not chunk name)
-	if not fn and R.type(R.loadstring) == "function" then
-		fn, err = R.loadstring(code, env)
-	end
-
-	-- Strategy 3: loadstring + setfenv  (Lua 5.1 / some executors)
-	if not fn and R.type(R.loadstring) == "function" then
-		fn, err = R.loadstring(code)
-		if fn and R.type(setfenv) == "function" then
-			setfenv(fn, env)
+	if not Fn and R.type(R.loadstring) == "function" then
+		local Ok, Result = R.pcall(R.loadstring, Code, Env)
+		if Ok and R.type(Result) == "function" then
+			Fn = Result
 		end
 	end
 
-	return fn, err
+	if not Fn and R.type(R.loadstring) == "function" then
+		Fn, Err = R.loadstring(Code)
+		if Fn and R.type(setfenv) == "function" then
+			setfenv(Fn, Env)
+		end
+	end
+
+	return Fn, Err
 end
 
--- ============================================================
--- §6  PUBLIC API
--- ============================================================
-
---[[
-	Sandbox:LoadSandboxedScript(code, replaceData?)
-
-	Runs `code` inside the sandbox and returns a live report table.
-	The report is populated asynchronously; poll report.Finished to
-	know when execution has completed.
-
-	replaceData: optional {[string]: any} to override specific sandbox
-	             globals (e.g. force a specific fake UserId).
-
-	Report fields:
-	  .Started            bool
-	  .Finished           bool
-	  .Error              string?         – compile or runtime error
-	  .StartTime          number          – os.clock() at start
-	  .EndTime            number?         – os.clock() at finish
-	  .Services           {string}        – Roblox services accessed
-	  .Libraries          {string}        – Instance.new / lib calls
-	  .URLs               {[url]: entry}  – HTTP requests
-	  .GlobalAssignments  {[key]: value}  – globals set by the script
-	  .Prints             {string}        – print() output
-	  .Warnings           {string}        – warn() output
-	  .NestedLoadstrings  {entry}         – loadstring() calls found
---]]
-function Sandbox:LoadSandboxedScript(code: string, replaceData: {[string]: any}?)
-	local report: {[string]: any} = {
+function Sandbox:LoadSandboxedScript(Code: string, ReplaceData: {[string]: any}?)
+	local Report: {[string]: any} = {
 		Started           = true,
 		Services          = {},
 		Libraries         = {},
@@ -647,29 +517,28 @@ function Sandbox:LoadSandboxedScript(code: string, replaceData: {[string]: any}?
 		Error             = nil,
 		StartTime         = R.os.clock(),
 		EndTime           = nil,
-		-- Internal: carry overrides down into nested sandboxes
-		_overrides        = replaceData,
+		_Overrides        = ReplaceData,
 	}
 
 	R.task.spawn(function()
-		local fn, err = _sandboxLoad(code, report)
+		local Fn, Err = _SandboxLoad(Code, Report)
 
-		if not fn then
-			report.Error    = "Compilation error: " .. R.tostring(err)
-			report.Finished = true
+		if not Fn then
+			Report.Error    = "Compilation error: " .. R.tostring(Err)
+			Report.Finished = true
 			return
 		end
 
-		local ok, runErr = R.pcall(fn)
-		if not ok then
-			report.Error = "Runtime error: " .. R.tostring(runErr)
+		local Ok, RunErr = R.pcall(Fn)
+		if not Ok then
+			Report.Error = "Runtime error: " .. R.tostring(RunErr)
 		end
 
-		report.EndTime  = R.os.clock()
-		report.Finished = true
+		Report.EndTime  = R.os.clock()
+		Report.Finished = true
 	end)
 
-	return report
+	return Report
 end
 
 return Sandbox
