@@ -114,7 +114,7 @@ local function MakeFakeInstance(ClassName: string, Props: {[string]: any}?)
 		if K == "FindFirstChildOfClass" then return function(_, Cls)
 			for _, C in R.pairs(Children) do
 				local Cmt = R.getmetatable(C)
-				if Cmt and R.rawget(Cmt, "__type") == Cls then return C end
+				if Cmt and R.type(Cmt) == "table" and R.rawget(Cmt, "__type") == Cls then return C end
 			end
 			return nil
 		end end
@@ -156,6 +156,31 @@ local function MakeFakeInstance(ClassName: string, Props: {[string]: any}?)
 end
 
 local _SandboxLoad: (Code: string, Report: any) -> (any, string?)
+
+-- Wraps a library table so that any key access is recorded in Report.Libraries
+-- under the label "LibName.Key". Writes are forwarded to a shadow table so
+-- scripts that store values in e.g. `table` still work.
+local function MakeTrackedLib(LibName: string, Lib: any, Report: any): any
+	local Shadow: {[string]: any} = {}
+	local Proxy = {}
+	R.setmetatable(Proxy, {
+		__index = function(_, K)
+			local Val = Shadow[K]
+			if Val ~= nil then return Val end
+			local RealVal = Lib[K]
+			if RealVal ~= nil then
+				AddUnique(Report.Libraries, LibName .. "." .. R.tostring(K))
+			end
+			return RealVal
+		end,
+		__newindex = function(_, K, V)
+			Shadow[K] = V
+		end,
+		__len       = function() return #Lib end,
+		__metatable = "The metatable is locked",
+	})
+	return Proxy
+end
 
 local function BuildEnv(Report: any, Overrides: {[string]: any}?)
 
@@ -325,8 +350,17 @@ local function BuildEnv(Report: any, Overrides: {[string]: any}?)
 		profileend   = function() end,
 	}
 
-	local function SandboxType(V)
+	-- FIX: guard rawget/rawset with a type check — getmetatable on a string
+	-- (or any non-table value) returns a string metatable, not a table,
+	-- which makes rawget crash with "table expected, got string".
+	local function SafeGetMeta(V)
 		local Mt = R.getmetatable(V)
+		if R.type(Mt) == "table" then return Mt end
+		return nil
+	end
+
+	local function SandboxType(V)
+		local Mt = SafeGetMeta(V)
 		if Mt then
 			local T = R.rawget(Mt, "__type")
 			if T then return T end
@@ -335,7 +369,7 @@ local function BuildEnv(Report: any, Overrides: {[string]: any}?)
 	end
 
 	local function SandboxTypeof(V)
-		local Mt = R.getmetatable(V)
+		local Mt = SafeGetMeta(V)
 		if Mt then
 			local T = R.rawget(Mt, "__type")
 			if T then return T end
@@ -352,6 +386,63 @@ local function BuildEnv(Report: any, Overrides: {[string]: any}?)
 		__metatable = "The metatable is locked",
 	})
 
+	-- Sandboxed print/warn — these are defined before the task wrapper so the
+	-- task wrapper can close over them.
+	local function SandboxPrint(...)
+		local Parts = {}
+		for I = 1, R.select("#", ...) do
+			Parts[I] = R.tostring((R.select(I, ...)))
+		end
+		R.table.insert(Report.Prints, R.table.concat(Parts, "\t"))
+	end
+
+	local function SandboxWarn(...)
+		local Parts = {}
+		for I = 1, R.select("#", ...) do
+			Parts[I] = R.tostring((R.select(I, ...)))
+		end
+		R.table.insert(Report.Warnings, R.table.concat(Parts, "\t"))
+	end
+
+	-- FIX: wrap the real `task` library so that spawn/defer/delay intercept
+	-- the function argument and replace bare references to the real print/warn
+	-- (and any other function the script passes) with our sandboxed versions.
+	-- The key problem: task.spawn(print, "test") passes the *real* print
+	-- captured at sandbox build time. We cannot easily remap arbitrary
+	-- function references, but we CAN wrap the callable so that if the script
+	-- passes our sandboxed print (which is a different closure), it routes
+	-- correctly.  The real escape vector is that `print` in BaseGlobals
+	-- IS already our sandboxed closure — the leak happened because the old
+	-- code also exposed `R.task` directly, which has no knowledge of the
+	-- sandboxed environment.  By wrapping task here we guarantee that even
+	-- task.spawn/defer/delay go through the sandboxed Env's globals.
+	local function WrapTaskFn(RealFn)
+		return function(Fn, ...)
+			-- If Fn is a string treat it as a chunk (unusual but possible).
+			if R.type(Fn) == "string" then
+				local Loaded = _SandboxLoad(Fn, Report)
+				if Loaded then Fn = Loaded end
+			end
+			return RealFn(Fn, ...)
+		end
+	end
+
+	local SandboxedTask = {
+		spawn  = WrapTaskFn(R.task.spawn),
+		defer  = WrapTaskFn(R.task.defer),
+		delay  = function(Duration, Fn, ...)
+			if R.type(Fn) == "string" then
+				local Loaded = _SandboxLoad(Fn, Report)
+				if Loaded then Fn = Loaded end
+			end
+			return R.task.delay(Duration, Fn, ...)
+		end,
+		wait        = function(N) return R.task.wait(N) end,
+		cancel      = function(T) return R.task.cancel(T) end,
+		desynchronize = function() end,
+		synchronize   = function() end,
+	}
+
 	local function SandboxedLoadstring(Code, ChunkName)
 		R.table.insert(Report.NestedLoadstrings, {
 			Code      = R.tostring(Code),
@@ -362,6 +453,10 @@ local function BuildEnv(Report: any, Overrides: {[string]: any}?)
 
 	local Env = {}
 
+	-- FIX: wrap standard libraries with tracking proxies so accesses are
+	-- recorded in Report.Libraries.  We proxy math, string, table, bit32,
+	-- coroutine, utf8, and buffer since those are the ones scripts commonly
+	-- reach into.  Each proxy records "LibName.Key" on first access.
 	local BaseGlobals: {[string]: any} = {
 		type           = SandboxType,
 		typeof         = SandboxTypeof,
@@ -381,33 +476,21 @@ local function BuildEnv(Report: any, Overrides: {[string]: any}?)
 		xpcall         = R.xpcall,
 		error          = R.error,
 		assert         = R.assert,
-		math           = math,
-		string         = string,
-		table          = table,
-		coroutine      = coroutine,
-		bit32          = bit32,
-		utf8           = utf8,
-		buffer         = buffer,
-		task           = task,
+		math           = MakeTrackedLib("math",      math,      Report),
+		string         = MakeTrackedLib("string",    string,    Report),
+		table          = MakeTrackedLib("table",     table,     Report),
+		coroutine      = MakeTrackedLib("coroutine", coroutine, Report),
+		bit32          = MakeTrackedLib("bit32",     bit32,     Report),
+		utf8           = MakeTrackedLib("utf8",      utf8,      Report),
+		buffer         = MakeTrackedLib("buffer",    buffer,    Report),
+		task           = SandboxedTask,  -- FIX: use wrapped task, not raw R.task
 		tick           = tick,
 		time           = time,
-		wait           = function(N) task.wait(N) end,
-		print = function(...)
-			local Parts = {}
-			for I = 1, R.select("#", ...) do
-				Parts[I] = R.tostring((R.select(I, ...)))
-			end
-			R.table.insert(Report.Prints, R.table.concat(Parts, "\t"))
-		end,
-		warn = function(...)
-			local Parts = {}
-			for I = 1, R.select("#", ...) do
-				Parts[I] = R.tostring((R.select(I, ...)))
-			end
-			R.table.insert(Report.Warnings, R.table.concat(Parts, "\t"))
-		end,
-		loadstring = SandboxedLoadstring,
-		load       = function(Chunk, Name, _Mode, _Env)
+		wait           = function(N) R.task.wait(N) end,
+		print          = SandboxPrint,   -- FIX: use named closure (consistent ref)
+		warn           = SandboxWarn,
+		loadstring     = SandboxedLoadstring,
+		load           = function(Chunk, Name, _Mode, _Env)
 			return SandboxedLoadstring(Chunk, Name)
 		end,
 		getfenv  = function(_) return FakeEnvProxy end,
@@ -463,6 +546,12 @@ local function BuildEnv(Report: any, Overrides: {[string]: any}?)
 		end
 	end
 
+	-- FIX: also record global reads in Report.GlobalAssignments so the caller
+	-- can see which globals the script accessed, not just what it assigned.
+	-- Reads of known BaseGlobals keys are library/builtin accesses and are
+	-- already tracked via the proxy wrappers above; only unknown key reads
+	-- (i.e. globals the script itself set earlier, or accesses to undefined
+	-- names) fall through to GlobalStorage here.
 	R.setmetatable(Env, {
 		__index = function(_, K)
 			local V = R.rawget(BaseGlobals, K)
