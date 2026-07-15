@@ -6480,8 +6480,10 @@ addcmd('betterfly',{'bfly'},function(args, speaker)
 	if not ConesFly then
 		notify('Startup Failure','ConesFly could not start for a unknown reason.')
 	else
+		ConesFly:EnableFly(false)
+		wait()
         ConesFly:SetCharacter(speaker.Character)
-		ConesFly:EnableFly(true,args[1] or 1,args[2] ~= nil and args[2] or true)
+		ConesFly:EnableFly(true,args[1],args[2] ~= nil and args[2] or true)
 	end
 end)
 
