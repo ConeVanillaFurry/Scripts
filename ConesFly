@@ -23,7 +23,7 @@ function ConesFlyModule:EnableFly(enable,speed,style)
 	speed *= 2
 	style = style == nil and true or style
 	
-	if enable then
+	if enable and not enabled then
 		enabled = enable
 		local Pos = CurrentCharacter.HumanoidRootPart.CFrame
 		local LastOffset = CurrentCharacter.Humanoid.CameraOffset
@@ -77,8 +77,8 @@ function ConesFlyModule:EnableFly(enable,speed,style)
 				--CurrentCharacter.Humanoid.CameraOffset = LastOffset
 			end
 		end)
-	else
-		enabled = enable
+	elseif enable == false then
+		enabled = false
 	end
 end
 
