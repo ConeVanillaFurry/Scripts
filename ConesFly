@@ -1,0 +1,85 @@
+local ConesFlyModule = {}
+
+local CurrentCharacter = nil
+local UIS = game:GetService("UserInputService")
+local enabled = false
+local FlyAnim = Instance.new("Animation")
+FlyAnim.AnimationId = "rbxassetid://90235844861528"
+--local FlyingAnim = Instance.new("Animation")
+
+
+function ConesFlyModule:SetCharacter(char)
+	assert(game:GetService("Players"):GetPlayerFromCharacter(char) ~= nil,"This is not a player's character.")
+	assert(char:FindFirstChild("HumanoidRootPart"),"This character does not have a HumanoidRootPart. Please wait for when this spawns in before calling SetCharacter.")
+	CurrentCharacter = char
+end
+
+local function CheckCharacter(char)
+	return char:FindFirstChild("HumanoidRootPart") and game:GetService("Players"):GetPlayerFromCharacter(char)
+end
+
+function ConesFlyModule:EnableFly(enable,speed,style)
+	speed = speed or 1
+	speed *= 2
+	style = style == nil and true or style
+	
+	if enable then
+		enabled = enable
+		local Pos = CurrentCharacter.HumanoidRootPart.CFrame
+		local LastOffset = CurrentCharacter.Humanoid.CameraOffset
+		local TweenedVal = Instance.new("CFrameValue")
+		local LookPart = Instance.new("Part")
+		TweenedVal.Value = CurrentCharacter.HumanoidRootPart.CFrame + Vector3.new(0,0,0)
+		local AT = CurrentCharacter.Humanoid:LoadAnimation(FlyAnim)
+		if style and CurrentCharacter.Humanoid.RigType == Enum.HumanoidRigType.R15 then
+			AT:Play()
+			AT.Looped = true
+		end
+		task.spawn(function()
+			while enabled and task.wait(1/30) and CheckCharacter(CurrentCharacter) do
+				if UIS:IsKeyDown(Enum.KeyCode.W) or UIS:IsKeyDown(Enum.KeyCode.Up) then
+					Pos = Pos + (game:GetService("Workspace").CurrentCamera.CFrame.LookVector * (speed))
+				end
+				if UIS:IsKeyDown(Enum.KeyCode.S) or UIS:IsKeyDown(Enum.KeyCode.Down) then
+					Pos = Pos + (game:GetService("Workspace").CurrentCamera.CFrame.LookVector * (-speed))
+				end
+				if UIS:IsKeyDown(Enum.KeyCode.A) then
+					Pos = Pos + ((game:GetService("Workspace").CurrentCamera.CFrame * CFrame.Angles(0,math.rad(90),0)).LookVector * (speed))
+				end
+				if UIS:IsKeyDown(Enum.KeyCode.D) then
+					Pos = Pos + ((game:GetService("Workspace").CurrentCamera.CFrame * CFrame.Angles(0,math.rad(90),0)).LookVector * (-speed))
+				end
+				if UIS:IsKeyDown(Enum.KeyCode.Space) or UIS:IsKeyDown(Enum.KeyCode.E) then
+					Pos = Pos + Vector3.new(0,speed,0)
+				end
+				if UIS:IsKeyDown(Enum.KeyCode.Q) then
+					Pos = Pos + Vector3.new(0,-speed,0)
+				end
+				LookPart.CFrame = game:GetService("Workspace").CurrentCamera.CFrame
+				LookPart.Position = Pos.Position
+				LookPart.Orientation = Vector3.new(0,LookPart.Orientation.Y,0)
+				
+				game:GetService("TweenService"):Create(TweenedVal,TweenInfo.new(.5,Enum.EasingStyle.Exponential,Enum.EasingDirection.Out,0,false,0),{Value = LookPart.CFrame}):Play()
+			end
+		end)
+		task.spawn(function()
+			while enabled and task.wait() and CheckCharacter(CurrentCharacter) do
+				if style and CurrentCharacter.Humanoid.RigType == Enum.HumanoidRigType.R15 then
+					game:GetService("TweenService"):Create(CurrentCharacter.Humanoid,TweenInfo.new(0.1,Enum.EasingStyle.Linear,Enum.EasingDirection.Out,0,false,0),{CameraOffset = LastOffset + Vector3.new(0,3,0)}):Play()
+				end
+				CurrentCharacter.HumanoidRootPart.CFrame = TweenedVal.Value
+				CurrentCharacter.HumanoidRootPart.Velocity = Vector3.zero
+				CurrentCharacter.HumanoidRootPart.RotVelocity = Vector3.zero
+			end
+			AT:Stop()
+			if style and CurrentCharacter.Humanoid.RigType == Enum.HumanoidRigType.R15 then
+				game:GetService("TweenService"):Create(CurrentCharacter.Humanoid,TweenInfo.new(0.1,Enum.EasingStyle.Linear,Enum.EasingDirection.Out,0,false,0),{CameraOffset = LastOffset}):Play()
+				--CurrentCharacter.Humanoid.CameraOffset = LastOffset
+			end
+		end)
+	else
+		enabled = enable
+	end
+end
+
+return ConesFlyModule
