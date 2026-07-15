@@ -4623,6 +4623,8 @@ CMDs[#CMDs + 1] = {NAME = '', DESC = ''}
 CMDs[#CMDs + 1] = {NAME = 'goto [player]', DESC = 'Go to a player'}
 CMDs[#CMDs + 1] = {NAME = 'tweengoto / tgoto [player]', DESC = 'Tween to a player (bypasses some anti cheats)'}
 CMDs[#CMDs + 1] = {NAME = 'tweenspeed / tspeed [num]', DESC = 'Sets how fast all tween commands go (default is 1)'}
+CMDs[#CMDs + 1] = {NAME = 'betterfly / bfly [speed] [useanims]', DESC = 'Uses a more undetected and more cleaner method of fly.'}
+CMDs[#CMDs + 1] = {NAME = 'unbetterfly / unbfly', DESC = 'Stops if you are using betterfly.'}
 CMDs[#CMDs + 1] = {NAME = 'vehiclegoto / vgoto [player]', DESC = 'Go to a player while in a vehicle'}
 CMDs[#CMDs + 1] = {NAME = 'loopgoto [player] [distance] [delay]', DESC = 'Loop teleport to a player'}
 CMDs[#CMDs + 1] = {NAME = 'unloopgoto', DESC = 'Stops teleporting you to a player'}
@@ -6487,7 +6489,7 @@ addcmd('unbetterfly',{'unbfly'},function(args, speaker)
 	if not ConesFly then
 		notify('Startup Failure','ConesFly could not start for a unknown reason.')
 	else
-        ConesFly:SetCharacter(speaker.Character)
+        ConesFly:EnableFly(false)
 	end
 end)
 
