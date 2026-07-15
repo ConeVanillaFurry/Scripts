@@ -19,7 +19,7 @@ local function CheckCharacter(char)
 end
 
 function ConesFlyModule:EnableFly(enable,speed,style)
-	speed = speed or 1
+	speed = speed or 2
 	speed *= 2
 	style = style == nil and true or style
 	
