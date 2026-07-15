@@ -26,7 +26,7 @@ function ConesFlyModule:EnableFly(enable,speed,style)
 	if enable and not enabled then
 		enabled = enable
 		local Pos = CurrentCharacter.HumanoidRootPart.CFrame
-		local LastOffset = CurrentCharacter.Humanoid.CameraOffset
+		local LastOffset = Vector3.zero--CurrentCharacter.Humanoid.CameraOffset
 		local TweenedVal = Instance.new("CFrameValue")
 		local LookPart = Instance.new("Part")
 		TweenedVal.Value = CurrentCharacter.HumanoidRootPart.CFrame + Vector3.new(0,0,0)
