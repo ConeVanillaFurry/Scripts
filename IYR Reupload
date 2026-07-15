@@ -45,7 +45,20 @@ if not game:IsLoaded() then
 	notLoaded:Destroy()
 end
 
-currentVersion = '7.0.1'
+currentVersion = '7.0.2'
+
+local ConesFly
+
+task.spawn(function()
+	ConesFly = loadstring(game:HttpGet("https://raw.githubusercontent.com/ConeVanillaFurry/Scripts/refs/heads/main/ConesFly"))() --On a new thread incase it ever fails/holds up the script
+end)
+
+--[[
+
+CONES UPDATE 7.0.2
+Added better fly (bfly/betterfly [speed] [useanims])
+
+--]]
 
 -- Go to line 12602 for 4nn1's Place stuff
 -- For _Real: Add more useless stuff and also add more bang-type commands. (NON-NSFW)
@@ -240,9 +253,9 @@ Title.Font = Enum.Font.SourceSans
 Title.TextSize = 18
 if os.date("*t", os.time()).month == 4 then
 	-- This is a reminder how EdgeIY edgy was
-	Title.Text = "Cones Porn Collection v"  .. currentVersion
+	Title.Text = "Cones Collection v"  .. currentVersion
 else
-	Title.Text = "Cones IYR 🏳️‍🌈 v"  .. currentVersion
+	Title.Text = "Cones IYR v"  .. currentVersion
 end
 do
 	local emoji = ({
@@ -6458,6 +6471,23 @@ addcmd('keepiy', {}, function(args, speaker)
 		updatesaves()
 	else
 		notify('Incompatible Exploit','Your exploit does not support this command (missing queue_on_teleport)')
+	end
+end)
+
+addcmd('betterfly',{'bfly'},function(args, speaker)
+	if not ConesFly then
+		notify('Startup Failure','ConesFly could not start for a unknown reason.')
+	else
+        ConesFly:SetCharacter(speaker.Character)
+		ConesFly:EnableFly(true,args[1] or 1,args[2] ~= nil and args[2] or true)
+	end
+end)
+
+addcmd('unbetterfly',{'unbfly'},function(args, speaker)
+	if not ConesFly then
+		notify('Startup Failure','ConesFly could not start for a unknown reason.')
+	else
+        ConesFly:SetCharacter(speaker.Character)
 	end
 end)
 
