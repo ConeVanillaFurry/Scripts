@@ -63,7 +63,7 @@ Added better fly (bfly/betterfly [speed] [useanims])
 if isfile and readfile and writefile then
 	local UpdateScr = game:HttpGet("https://raw.githubusercontent.com/ConeVanillaFurry/Scripts/refs/heads/main/iyr_updatescreen")
 	if isfile("iyr_trackedver.iy") and readfile("iyr_trackedver.iy") == UpdateScr:split("\n")[1]:split("--^IYR_VERSION=")[2] then
-		elseif
+		else
 		writefile("iyr_trackedver.iy",currentVersion)
 		loadstring(UpdateScr)()
 	end
