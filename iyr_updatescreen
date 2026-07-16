@@ -115,11 +115,7 @@ Removed Pride Flag - It isn't June anymore, makes sense if i just remove that.. 
 Made Update Menu - This shows on every update you missed out on
 
 betterfly - Gives you a better fly to use, and more undetectable.
-exploiterchat - Loads Plasmii's exploiter chat. (REQUIRES SCRIPT KEY)
-wirelesskit - Loads my wireless kit, good for debugging on wireless P2P communication on roblox.
-plasma - Loads Plasmii's Plasma FE script. Like an alternative to IY. (REQUIRES SCRIPT KEY)
-scripthunter - Hunts for client-side anticheat scripts to open/debug.
-
+antitouch - Prevents killbricks/bad hitboxes from ever touching you.
 
 Mk thats all i wanted to add, press "Close" to not see this ever again]];
 G2L["9"]["Position"] = UDim2.new(0, 349, 0, 438);
@@ -180,6 +176,12 @@ local script = G2L["e"];
 			wait() wait()
 			script.Parent.Enabled = true
 			script.Parent.Frame.VideoFrame:Play()
+			task.spawn(function()
+				task.wait(1.5)
+				if script.Parent.Frame.VideoFrame.IsLoaded == false then
+					script.Parent.Frame.VideoFrame.PreviewFallback.Visible = true
+				end
+			end)
 		else
 			wait() wait() wait() wait() --waitwaitwaitwaitwaiittt
 			H.Text = "Error occoured. Fallbacking assets..."
